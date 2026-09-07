@@ -1,0 +1,1 @@
+{"verdict":"FULFILLED","settlement_bps":10000,"findings":[{"criterion_id":"docs","decision":"PASS","citations":["https://example.com/delivery"],"reason":"The required public documentation is present."}],"summary":"All locked criteria are satisfied."}

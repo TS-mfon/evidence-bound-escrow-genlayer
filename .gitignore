@@ -1,0 +1,7 @@
+.cache/
+.pytest_cache/
+__pycache__/
+artifacts/
+.env*
+docs/GENLAYER_PROJECT_REVIEW.md
+review-results/
