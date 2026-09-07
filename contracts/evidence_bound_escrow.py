@@ -8,6 +8,7 @@ MAX_TEXT = 12000
 MAX_URLS = 8
 MAX_CRITERIA = 12
 MAX_RESULT_CHARS = 16000
+MAX_APPEALS = 1
 STATUSES = ("OPEN", "SUBMITTED", "FINALIZED", "APPEALED", "SETTLED")
 
 
@@ -170,7 +171,7 @@ class EvidenceBoundEscrow(gl.Contract):
         criteria = _criteria(criteria_json)
         urls = _urls(evidence_urls_json)
         respondent_address = Address(respondent)
-        record = {"case_id": case_id, "sponsor": str(gl.message.sender_address), "respondent": str(respondent_address), "amount": str(gl.message.value), "criteria": criteria, "urls": urls, "description": _text(description, "description", 2000), "submission": "", "result": None}
+        record = {"case_id": case_id, "sponsor": str(gl.message.sender_address), "respondent": str(respondent_address), "amount": str(gl.message.value), "criteria": criteria, "urls": urls, "description": _text(description, "description", 2000), "submission": "", "result": None, "appeal_count": 0}
         self.cases[case_id] = json.dumps(record, sort_keys=True)
         self.case_status[case_id] = "OPEN"
         self.case_ids.append(case_id)
@@ -191,17 +192,22 @@ class EvidenceBoundEscrow(gl.Contract):
         return case
 
     @gl.public.write
-    def finalize_case(self, case_id: str, appeal_context: str = "") -> dict:
+    def finalize_case(self, case_id: str) -> dict:
         case = self._case(case_id)
-        if self.case_status[case_id] not in ("SUBMITTED", "APPEALED"):
+        status = self.case_status[case_id]
+        if status not in ("SUBMITTED", "APPEALED"):
             raise gl.vm.UserError("[EXPECTED] Case is not reviewable")
         urls = case["urls"]
+        appeal_context = ""
+        if status == "APPEALED":
+            appeal_context = _text(case.get("appeal_reason", ""), "stored appeal reason", 2000)
+            appeal_context = f"\nAuthorized appeal reason from {case['appealed_by']}: {appeal_context}"
         prompt = f'''Evaluate an escrow delivery against locked criteria.
 Description: {case['description']}
 Submission: {case['submission']}
 Criteria: {json.dumps(case['criteria'])}
 Evidence: {{evidence}}
-Appeal: {appeal_context}
+{appeal_context}
 
 Return one JSON object only, using this exact schema:
 {{"verdict":"FULFILLED|BREACHED|INCONCLUSIVE","settlement_bps":10000,"findings":[{{"criterion_id":"exact criterion id","decision":"PASS|FAIL|UNCLEAR","citations":["exact fetched URL"],"reason":"evidence-grounded reason"}}],"summary":"concise explanation"}}
@@ -248,10 +254,14 @@ Use 10000 for FULFILLED, 0 for BREACHED, and 5000 for INCONCLUSIVE. Include exac
         case = self._case(case_id)
         if self.case_status[case_id] != "FINALIZED":
             raise gl.vm.UserError("[EXPECTED] Case is not appealable")
+        if int(case.get("appeal_count", 0)) >= MAX_APPEALS:
+            raise gl.vm.UserError("[EXPECTED] Appeal limit reached")
         sender = str(gl.message.sender_address)
         if sender != case["sponsor"] and sender != case["respondent"]:
             raise gl.vm.UserError("[EXPECTED] Only a party may appeal")
         case["appeal_reason"] = _text(reason, "appeal reason", 2000)
+        case["appealed_by"] = sender
+        case["appeal_count"] = int(case.get("appeal_count", 0)) + 1
         self.cases[case_id] = json.dumps(case, sort_keys=True)
         self.case_status[case_id] = "APPEALED"
         return case

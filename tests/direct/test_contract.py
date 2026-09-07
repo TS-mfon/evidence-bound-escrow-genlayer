@@ -78,3 +78,29 @@ def test_live_model_aliases_are_normalized(direct_vm, direct_deploy, direct_alic
     direct_vm.mock_web(r"https://example\.com/delivery", {"status": 200, "body": "The required documentation is public."})
     direct_vm.mock_llm(r".*escrow delivery.*", json.dumps({"decision": "APPROVED", "criteria": [{"id": "docs", "result": "MET", "citations": ["https://example.com/delivery"], "reason": "Published."}], "summary": "Complete."}))
     assert contract.finalize_case("case-alias")["result"]["verdict"] == "FULFILLED"
+
+
+def test_appeal_uses_authorized_stored_reason_and_is_bounded(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = deploy(direct_deploy, direct_alice)
+    direct_vm.sender = direct_alice
+    fund(direct_vm)
+    contract.open_case("case-appeal", direct_bob, CRITERIA, URLS, "Publish docs")
+    direct_vm.value = 0
+    direct_vm.sender = direct_bob
+    contract.submit_delivery("case-appeal", "docs are live", "0x" + __import__("hashlib").sha256(b"docs are live").hexdigest())
+    direct_vm.mock_web(r"https://example\.com/delivery", {"status": 200, "body": "The required documentation is public."})
+    direct_vm.mock_llm(r".*escrow delivery.*", json.dumps({"verdict": "FULFILLED", "settlement_bps": 10000, "findings": [{"criterion_id": "docs", "decision": "PASS", "citations": ["https://example.com/delivery"], "reason": "Published."}], "summary": "Complete."}))
+    contract.finalize_case("case-appeal")
+
+    direct_vm.sender = direct_alice
+    appealed = contract.appeal_case("case-appeal", "The evidence was not available at review time.")
+    assert appealed["appeal_count"] == 1
+    assert appealed["appealed_by"] == appealed["sponsor"]
+    direct_vm.clear_mocks()
+    direct_vm.mock_web(r"https://example\.com/delivery", {"status": 200, "body": "The required documentation is public."})
+    direct_vm.mock_llm(r".*Authorized appeal reason from.*not available at review time.*", json.dumps({"verdict": "BREACHED", "settlement_bps": 0, "findings": [{"criterion_id": "docs", "decision": "FAIL", "citations": ["https://example.com/delivery"], "reason": "Not available."}], "summary": "Appeal upheld."}))
+    result = contract.finalize_case("case-appeal")
+    assert result["result"]["verdict"] == "BREACHED"
+
+    with direct_vm.expect_revert("Appeal limit reached"):
+        contract.appeal_case("case-appeal", "A second appeal should be rejected.")

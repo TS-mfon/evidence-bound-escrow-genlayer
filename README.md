@@ -4,6 +4,8 @@ EvidenceBoundEscrow is a reusable GenLayer Intelligent Contract primitive for es
 
 The sponsor locks native value and a criteria/evidence manifest. The respondent submits a delivery commitment. GenLayer validators independently fetch the committed public evidence and compare the substantive decision through `gl.eq_principle.prompt_comparative`. Consensus controls the settlement basis points and the contract executes the resulting payout, not just an explanation.
 
+Each case starts with an appeal-free review prompt. A sponsor or respondent may authorize one stored appeal reason after finalization; the appeal review reads that reason from case state, and no case can be reopened a second time.
+
 ## Why GenLayer
 
 Removing GenLayer removes the trust model: no single platform, seller, or centralized AI service can unilaterally decide whether evidence satisfies the locked criteria and release escrow.
