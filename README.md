@@ -19,4 +19,4 @@ uvx --from genlayer-test pytest -q tests/direct
 
 See `docs/consensus.md` and `docs/threat-model.md` for the complete design boundary.
 
-The verified StudioNet deployment and completed resolution transactions are documented in `docs/LIVE_DEPLOYMENT.md`. The repository does not contain private keys; live writes require the caller to provide their own signer through local environment configuration.
+The canonical corrected StudioNet deployment and lifecycle evidence are documented in `docs/LIVE_DEPLOYMENT.md`. Use `0xcAb44063DF99fBE2eC04a7c923BA1bdED3D662D0`; the repository does not contain private keys.
