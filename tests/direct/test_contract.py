@@ -104,3 +104,64 @@ def test_appeal_uses_authorized_stored_reason_and_is_bounded(direct_vm, direct_d
 
     with direct_vm.expect_revert("Appeal limit reached"):
         contract.appeal_case("case-appeal", "A second appeal should be rejected.")
+
+
+def test_unsubmitted_case_recovers_to_sponsor_after_deadline(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = deploy(direct_deploy, direct_alice)
+    direct_vm.sender = direct_alice
+    fund(direct_vm)
+    opened = contract.open_case("case-recover-open", direct_bob, CRITERIA, URLS, "Publish docs")
+    direct_vm.warp("2030-01-01T00:00:00Z")
+    direct_vm.sender = direct_alice
+    recovered = contract.recover_case("case-recover-open")
+    assert recovered["recovered_amount"] == opened["amount"]
+    assert recovered["recovered_by"] == recovered["sponsor"]
+    assert contract.get_status("case-recover-open") == "RECOVERED"
+
+
+def test_submitted_case_with_available_evidence_cannot_recover(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = deploy(direct_deploy, direct_alice)
+    direct_vm.sender = direct_alice
+    fund(direct_vm)
+    contract.open_case("case-recover-blocked", direct_bob, CRITERIA, URLS, "Publish docs")
+    direct_vm.value = 0
+    direct_vm.sender = direct_bob
+    contract.submit_delivery("case-recover-blocked", "docs are live", "0x" + __import__("hashlib").sha256(b"docs are live").hexdigest())
+    direct_vm.warp("2030-01-01T00:00:00Z")
+    direct_vm.mock_web(r"https://example\.com/delivery", {"status": 200, "body": "The required documentation is public."})
+    with direct_vm.expect_revert("Evidence remains reviewable"):
+        contract.recover_case("case-recover-blocked")
+    assert contract.get_status("case-recover-blocked") == "SUBMITTED"
+
+
+def test_submitted_case_with_unavailable_evidence_recovers(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = deploy(direct_deploy, direct_alice)
+    direct_vm.sender = direct_alice
+    fund(direct_vm)
+    contract.open_case("case-recover-unavailable", direct_bob, CRITERIA, URLS, "Publish docs")
+    direct_vm.value = 0
+    direct_vm.sender = direct_bob
+    contract.submit_delivery("case-recover-unavailable", "docs are live", "0x" + __import__("hashlib").sha256(b"docs are live").hexdigest())
+    direct_vm.warp("2030-01-01T00:00:00Z")
+    direct_vm.mock_web(r"https://example\.com/delivery", {"status": 503, "body": "Unavailable"})
+    direct_vm.sender = direct_alice
+    pending = contract.recover_case("case-recover-unavailable")
+    assert pending["recovery_deadline"] > pending["recovery_started_at"]
+    assert contract.get_status("case-recover-unavailable") == "SUBMITTED"
+    direct_vm.warp("2030-01-05T00:00:00Z")
+    recovered = contract.recover_case("case-recover-unavailable")
+    assert recovered["recovery_reason"] == "LOCKED_EVIDENCE_UNAVAILABLE"
+    assert recovered["recovered_amount"] == recovered["amount"]
+    assert contract.get_status("case-recover-unavailable") == "RECOVERED"
+
+
+def test_delivery_cannot_be_submitted_after_deadline(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = deploy(direct_deploy, direct_alice)
+    direct_vm.sender = direct_alice
+    fund(direct_vm)
+    contract.open_case("case-late-submit", direct_bob, CRITERIA, URLS, "Publish docs")
+    direct_vm.warp("2030-01-01T00:00:00Z")
+    direct_vm.value = 0
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("Submission deadline passed"):
+        contract.submit_delivery("case-late-submit", "docs are live", "0x" + __import__("hashlib").sha256(b"docs are live").hexdigest())

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import datetime
 from genlayer import *
 
 MAX_TEXT = 12000
@@ -9,11 +10,17 @@ MAX_URLS = 8
 MAX_CRITERIA = 12
 MAX_RESULT_CHARS = 16000
 MAX_APPEALS = 1
-STATUSES = ("OPEN", "SUBMITTED", "FINALIZED", "APPEALED", "SETTLED")
+SUBMISSION_WINDOW = 7 * 24 * 60 * 60
+REVIEW_WINDOW = 3 * 24 * 60 * 60
+STATUSES = ("OPEN", "SUBMITTED", "FINALIZED", "APPEALED", "SETTLED", "RECOVERED")
 
 
 def _hash(value: str) -> str:
     return "0x" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _now() -> int:
+    return int(datetime.datetime.now(datetime.timezone.utc).timestamp())
 
 
 def _text(value, label: str, maximum: int = 512) -> str:
@@ -74,6 +81,18 @@ def _fetch(urls: list) -> list:
             raise gl.vm.UserError("[EXTERNAL] Evidence source is empty or too large")
         fetched.append({"url": url, "body": body})
     return fetched
+
+
+def _availability(urls: list) -> dict:
+    unavailable = []
+    for url in urls:
+        try:
+            response = gl.nondet.web.get(url, headers={"Accept": "text/html,application/json"})
+            if response.status < 200 or response.status >= 300:
+                unavailable.append(url)
+        except Exception:
+            unavailable.append(url)
+    return {"all_available": len(unavailable) == 0, "unavailable_urls": unavailable}
 
 
 def _normalize(raw, criteria: list, urls: list, fetched: list) -> dict:
@@ -171,7 +190,8 @@ class EvidenceBoundEscrow(gl.Contract):
         criteria = _criteria(criteria_json)
         urls = _urls(evidence_urls_json)
         respondent_address = Address(respondent)
-        record = {"case_id": case_id, "sponsor": str(gl.message.sender_address), "respondent": str(respondent_address), "amount": str(gl.message.value), "criteria": criteria, "urls": urls, "description": _text(description, "description", 2000), "submission": "", "result": None, "appeal_count": 0}
+        opened_at = _now()
+        record = {"case_id": case_id, "sponsor": str(gl.message.sender_address), "respondent": str(respondent_address), "amount": str(gl.message.value), "criteria": criteria, "urls": urls, "description": _text(description, "description", 2000), "submission": "", "result": None, "appeal_count": 0, "opened_at": opened_at, "submission_deadline": opened_at + SUBMISSION_WINDOW, "submitted_at": 0, "review_deadline": 0}
         self.cases[case_id] = json.dumps(record, sort_keys=True)
         self.case_status[case_id] = "OPEN"
         self.case_ids.append(case_id)
@@ -182,11 +202,16 @@ class EvidenceBoundEscrow(gl.Contract):
         case = self._case(case_id)
         if str(gl.message.sender_address) != case["respondent"] or self.case_status[case_id] != "OPEN":
             raise gl.vm.UserError("[EXPECTED] Delivery not authorized")
+        if _now() >= int(case["submission_deadline"]):
+            raise gl.vm.UserError("[EXPECTED] Submission deadline passed")
         _text(manifest, "manifest", MAX_TEXT)
         delivery_hash = _text(delivery_hash, "delivery hash", 128)
         if delivery_hash.lower() != _hash(manifest).lower():
             raise gl.vm.UserError("[EXPECTED] Delivery hash does not match manifest")
         case["submission"] = {"manifest": manifest, "delivery_hash": delivery_hash}
+        submitted_at = _now()
+        case["submitted_at"] = submitted_at
+        case["review_deadline"] = submitted_at + REVIEW_WINDOW
         self.cases[case_id] = json.dumps(case, sort_keys=True)
         self.case_status[case_id] = "SUBMITTED"
         return case
@@ -250,6 +275,61 @@ Use 10000 for FULFILLED, 0 for BREACHED, and 5000 for INCONCLUSIVE. Include exac
         return case
 
     @gl.public.write
+    def recover_case(self, case_id: str) -> dict:
+        case = self._case(case_id)
+        status = self.case_status[case_id]
+        sender = str(gl.message.sender_address)
+        if sender != case["sponsor"] and sender != case["respondent"]:
+            raise gl.vm.UserError("[EXPECTED] Only a party may recover")
+        if status == "OPEN":
+            if sender != case["sponsor"]:
+                raise gl.vm.UserError("[EXPECTED] Only sponsor may refund an unsubmitted case")
+            if _now() < int(case["submission_deadline"]):
+                raise gl.vm.UserError("[EXPECTED] Submission deadline not reached")
+            case["recovery_reason"] = "NO_SUBMISSION"
+        elif status == "APPEALED":
+            if _now() < int(case["appeal_deadline"]):
+                raise gl.vm.UserError("[EXPECTED] Appeal deadline not reached")
+            self.case_status[case_id] = "FINALIZED"
+            case["recovery_reason"] = "APPEAL_TIMEOUT_PRIOR_REVIEW_RESTORED"
+            self.cases[case_id] = json.dumps(case, sort_keys=True)
+            return self.settle_case(case_id)
+        elif status == "SUBMITTED":
+            if _now() < int(case["review_deadline"]):
+                raise gl.vm.UserError("[EXPECTED] Review deadline not reached")
+            def availability_fn() -> dict:
+                return _availability(case["urls"])
+
+            availability = gl.eq_principle.prompt_comparative(
+                availability_fn,
+                principle="Independently fetch every locked URL. Require exact agreement on all_available and the exact unavailable URL set, including partial outages. A URL is unavailable only if retrieval fails or returns a non-2xx response. Do not infer availability from the submitted manifest.",
+            )
+            missing = availability.get("unavailable_urls", [])
+            if availability.get("all_available", False) or not missing or any(url not in case["urls"] for url in missing):
+                raise gl.vm.UserError("[EXPECTED] Evidence remains reviewable")
+            if not case.get("recovery_started_at", 0):
+                case["recovery_started_at"] = _now()
+                case["recovery_deadline"] = _now() + REVIEW_WINDOW
+                case["unavailable_urls"] = missing
+                self.cases[case_id] = json.dumps(case, sort_keys=True)
+                return case
+            if _now() < int(case["recovery_deadline"]):
+                raise gl.vm.UserError("[EXPECTED] Evidence cure deadline not reached")
+            if not set(missing).intersection(case["unavailable_urls"]):
+                raise gl.vm.UserError("[EXPECTED] Original outage not confirmed")
+            case["recovery_reason"] = "LOCKED_EVIDENCE_UNAVAILABLE"
+            case["unavailable_urls"] = missing
+        else:
+            raise gl.vm.UserError("[EXPECTED] Case is not recoverable")
+        amount = u256(int(case["amount"]))
+        gl.get_contract_at(Address(case["sponsor"])).emit_transfer(value=amount, on="finalized")
+        case["recovered_amount"] = str(amount)
+        case["recovered_by"] = sender
+        self.cases[case_id] = json.dumps(case, sort_keys=True)
+        self.case_status[case_id] = "RECOVERED"
+        return case
+
+    @gl.public.write
     def appeal_case(self, case_id: str, reason: str) -> dict:
         case = self._case(case_id)
         if self.case_status[case_id] != "FINALIZED":
@@ -262,6 +342,7 @@ Use 10000 for FULFILLED, 0 for BREACHED, and 5000 for INCONCLUSIVE. Include exac
         case["appeal_reason"] = _text(reason, "appeal reason", 2000)
         case["appealed_by"] = sender
         case["appeal_count"] = int(case.get("appeal_count", 0)) + 1
+        case["appeal_deadline"] = _now() + REVIEW_WINDOW
         self.cases[case_id] = json.dumps(case, sort_keys=True)
         self.case_status[case_id] = "APPEALED"
         return case

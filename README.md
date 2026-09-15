@@ -6,6 +6,8 @@ The sponsor locks native value and a criteria/evidence manifest. The respondent 
 
 Each case starts with an appeal-free review prompt. A sponsor or respondent may authorize one stored appeal reason after finalization; the appeal review reads that reason from case state, and no case can be reopened a second time.
 
+Escrow cannot remain locked forever: an unsubmitted case becomes sponsor-refundable after seven days, while a submitted case with unavailable locked evidence requires comparative outage consensus plus a three-day cure window before sponsor recovery. Available evidence remains reviewable and blocks recovery.
+
 ## Why GenLayer
 
 Removing GenLayer removes the trust model: no single platform, seller, or centralized AI service can unilaterally decide whether evidence satisfies the locked criteria and release escrow.
