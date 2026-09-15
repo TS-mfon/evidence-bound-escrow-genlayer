@@ -21,4 +21,4 @@ uvx --from genlayer-test pytest -q tests/direct
 
 See `docs/consensus.md` and `docs/threat-model.md` for the complete design boundary.
 
-The canonical corrected StudioNet deployment and matching Explorer lifecycle evidence are documented in `docs/LIVE_DEPLOYMENT.md`. Use `0xcAb44063DF99fBE2eC04a7c923BA1bdED3D662D0`; the repository does not contain private keys.
+The canonical recovery-enabled StudioNet deployment and matching Explorer source are documented in `docs/LIVE_DEPLOYMENT.md`. Use `0x02408B2f3037993aAc7a1220E3c5F9D458a19196`; the repository does not contain private keys.
